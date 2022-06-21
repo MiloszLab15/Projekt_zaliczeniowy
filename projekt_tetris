@@ -1,0 +1,418 @@
+#include <chrono>
+#include <random>
+#include <SFML/Graphics.hpp>
+#include <SFML/Audio.hpp>
+
+#include "plansza_tetrisa.h"
+#include "tworzenie tetrisow.h"
+#include "kolizja_sciana.h"
+#include "klocek_tetrisa.h"
+
+
+bool koniec_gry = 0;
+bool hard_drop_on = 0;//czy chcemy aby tetirs od razu spadł na ziemie żeby nieco przyspie
+bool rotacja_on = 0;
+unsigned lag = 0;//ta zmienna posłuży nam do uniezależnienia się jakby od fps
+unsigned linie_wyczyszczone = 0;
+unsigned char efekt_znikania = 0;//tu sie nam przyda, do wyczyszczenia linii,a konkretnie do animacji
+unsigned char obecna_predkosc_spadanie = poczatkowa_predkosc;
+unsigned char czas_spadania = 0;//to jest samego spadania
+unsigned char czas_poruszania = 0;//to jest czas poruszania się za w prawo w lewo itd
+unsigned char nastpeny_ksztalt_na_planszy;
+unsigned char czas_szybszego_spadania = 0;//to jest czas aby klocek się poruszał szybciej,ale żeby od razu nie zleciał jak przy hard_drop
+
+int main()
+{
+	
+	std::chrono::time_point<std::chrono::steady_clock> obecny_czas;//ta sama funkcja w kodzie co lag
+	std::random_device losowanie_liczb;
+	std::default_random_engine engine_number(losowanie_liczb());
+	std::uniform_int_distribution<unsigned short> losowanie_ksztaltow(0, 6);
+	sf::Text tekst;
+	sf::Font czcionka;
+	czcionka.loadFromFile("czcionka.ttf");
+	tekst.setFont(czcionka);
+	tekst.setString("test");
+	tekst.setFillColor(sf::Color::Red);
+	tekst.setPosition(static_cast<unsigned short>(wielkosc_komorki * (0.5f + kolumny)), static_cast<unsigned short>(0.5f * wielkosc_komorki * wiersze));
+	sf::Clock clock;
+	sf::Time time;
+
+	std::vector<bool> czy_wyczyscic_linie(wiersze, 0);
+
+	std::vector<sf::Color> kolor_kommorek = //poszukałem w internecie kolorów z gry
+	{
+		sf::Color(36, 36, 85),
+		sf::Color(0, 219, 255),
+		sf::Color(0, 36, 255),
+		sf::Color(255, 146, 0),
+		sf::Color(255, 219, 0),
+		sf::Color(0, 219, 0),
+		sf::Color(146, 0, 255),
+		sf::Color(219, 0, 0),
+		sf::Color(73, 73, 85)
+	};
+
+	std::vector<std::vector<unsigned char>> macierz(kolumny, std::vector<unsigned char>(wiersze));//dzięki tej macierzy operujemy ogółem wszystkim na mapie
+
+	sf::Event event;
+
+	sf::RenderWindow window(sf::VideoMode(2 * wielkosc_komorki * kolumny * resize, wielkosc_komorki * wiersze * resize), "Gra Tetris - projekt zaliczeniowy", sf::Style::Close);
+
+	window.setView(sf::View(sf::FloatRect(0, 0, 2 * wielkosc_komorki * kolumny, wielkosc_komorki * wiersze)));
+	sf::SoundBuffer buffer;
+	sf::Listener::setPosition(static_cast<float>(window.getSize().x), static_cast<float>(window.getSize().y), 0);
+	buffer.loadFromFile("Tetris.wav");
+	sf::Sound dzwiek;
+	dzwiek.setBuffer(buffer);
+	dzwiek.setRelativeToListener(true);
+	dzwiek.setVolume(80.0f);
+	dzwiek.setLoop(true);
+	dzwiek.play();
+	klocek_tetrisa klocek_tetrisa(static_cast<unsigned char>(losowanie_ksztaltow(engine_number)), macierz);
+
+	nastpeny_ksztalt_na_planszy = static_cast<unsigned char>(losowanie_ksztaltow(engine_number));
+
+	obecny_czas = std::chrono::steady_clock::now();
+
+	while (1 == window.isOpen())
+	{
+		
+		time = clock.getElapsedTime();
+		unsigned delta_t = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - obecny_czas).count();//no co tu wyjaśniać
+
+		lag += delta_t;
+
+		obecny_czas += std::chrono::microseconds(delta_t);
+
+		while (czas_trwania_klatki <= lag)//kiedy czas trwania klatki jest krytyczny
+		{
+			lag -= czas_trwania_klatki;
+
+			while (window.pollEvent(event) == 1)
+			{
+				switch (event.type)
+				{
+
+				case sf::Event::Closed:
+				{
+					window.close();
+					break;
+				}
+				case sf::Event::KeyReleased:
+				{
+					switch (event.key.code)
+					{
+					case sf::Keyboard::D:
+					case sf::Keyboard::A:
+					{
+						rotacja_on = 0;//żeby nam się klocek cały czas nie obracał
+						break;
+					}
+					case sf::Keyboard::Down:
+					{
+						czas_szybszego_spadania = 0;//resetujemy żeby nam tak cały czas nie spadał
+						break;
+					}
+					case sf::Keyboard::Left:
+					case sf::Keyboard::Right:
+					{
+						czas_poruszania = 0;//resetujemy żeby się nie poruszał cały czas w lewo bądź w prawo
+
+						break;
+					}
+					case sf::Keyboard::Space:
+					{
+						hard_drop_on = 0;//resetujemy żeby każdy klocek nam nie spadał
+					}
+					}
+				}
+				}
+			}
+
+			if (efekt_znikania == 0)
+			{
+				if (koniec_gry == 0)
+				{
+					if (rotacja_on == 0)
+					{
+						if (sf::Keyboard::isKeyPressed(sf::Keyboard::D) == 1)//rotacja w prawo
+						{
+							rotacja_on = 1;
+
+							klocek_tetrisa.rotacje(1, macierz);
+						}
+						else if (sf::Keyboard::isKeyPressed(sf::Keyboard::A) == 1)//rotacja w lewo
+						{
+							rotacja_on = 1;
+
+							klocek_tetrisa.rotacje(0, macierz);
+						}
+					}
+
+					if (czas_poruszania == 0)
+					{
+						if (sf::Keyboard::isKeyPressed(sf::Keyboard::Left) == 1)//obiekt  porusza się w lewo
+						{
+							czas_poruszania = 1;
+
+							klocek_tetrisa.move_left(macierz);
+						}
+						else if (sf::Keyboard::isKeyPressed(sf::Keyboard::Right) == 1)//w prawo
+						{
+							czas_poruszania = 1;
+
+							klocek_tetrisa.move_right(macierz);
+						}
+					}
+					else
+					{
+						czas_poruszania = (czas_poruszania + 1) %predkosc;
+					}
+
+					if (hard_drop_on == 0)
+					{
+						if (sf::Keyboard::isKeyPressed(sf::Keyboard::Space) == 1)//tutaj obiekt po naciśnięciu spacji spada dokładnie w to samo miejsce to ghost_obiekt
+						{
+							hard_drop_on = 1;
+
+
+							czas_spadania = obecna_predkosc_spadanie;//no tutaj trochę nie fortunne nazwy
+
+							klocek_tetrisa.hard_drop(macierz);
+						}
+					}
+					if (czas_szybszego_spadania == 0)// samo dla szybszego spadania
+					{
+						if (sf::Keyboard::isKeyPressed(sf::Keyboard::Down) == 1)//tutaj klocek tetrisa szybciej spada
+						{
+							if (klocek_tetrisa.move_down(macierz) == 1)
+							{
+								czas_spadania = 0;
+								czas_szybszego_spadania = 1;
+							}
+						}
+					}
+					else
+					{
+						czas_szybszego_spadania = (czas_szybszego_spadania + 1) %predkosc_szybszego_spadania;
+					}
+
+					if (obecna_predkosc_spadanie == czas_spadania)//czyli mamy koniec spadania
+					{
+
+						if (klocek_tetrisa.move_down(macierz) == 0) // jeżeli klocek nie może się już poruszać
+						{
+							klocek_tetrisa.aktualizuj_plansze(macierz);//aktualizujemy plansze o już ustawione klocki
+
+
+							for (unsigned char i = 0; i < wiersze; i++)//no ogółem sprawdzan planszę żeby zobaczyć czy mam usunąć, tutaj miałem spory problem bo zawsze przeszukiwało mi nie w poziomie tylko w pione (tzn. ------- )
+							{
+								bool usunac_linie = 1;
+
+								for (unsigned char j = 0; j <kolumny; j++)
+								{
+									if (0 == macierz[j][i])
+									{
+										usunac_linie = 0;
+
+										break;
+									}
+								}
+
+								if (usunac_linie == 1)//jeżeli mamy usunąć
+								{
+									
+									linie_wyczyszczone++;
+
+									efekt_znikania = efekt_czyszczenia_linii;//rozpoczynamy znikanie
+
+									czy_wyczyscic_linie[i] = 1;//ustawiamy obecną linie jako tą do usunięcia
+
+									if (linie_wyczyszczone == 0 %szybkosc_czyszczenia_linii)//jeżeli gracz osiągnie pewien pułap czas mu uprzykrzyć życię
+									{
+										obecna_predkosc_spadanie = std::max<unsigned char>(predkosc_szybszego_spadania, obecna_predkosc_spadanie - 1);// its time to SPEEEEED UP
+									}
+								}
+							}
+
+							if (efekt_znikania == 0)// jezeli mamy koniec juz znikania
+							{
+								
+								koniec_gry = 0 == klocek_tetrisa.resetowanie_tetrisa(nastpeny_ksztalt_na_planszy, macierz);
+
+								nastpeny_ksztalt_na_planszy = static_cast<unsigned char>(losowanie_ksztaltow(engine_number));//spawnujemy nowy ksztalt
+							}
+						}
+					
+						czas_spadania = 0;//restartujemy
+					}
+					else
+					{
+						czas_spadania++;//dodajemy se czasy
+					}
+				} 
+				else if (sf::Keyboard::isKeyPressed(sf::Keyboard::Enter) == 1)//przy wciśnięciu entera resetujemy wszystko co się da do sytuacji początkowej, oczywiście przy założeniu końca gry
+				{
+					linie_wyczyszczone = 0;
+					hard_drop_on = 0;
+					rotacja_on= 0;
+					czas_spadania = 0;
+					obecna_predkosc_spadanie = poczatkowa_predkosc;
+					czas_poruszania = 0;
+					czas_szybszego_spadania = 0;
+					koniec_gry = 0;
+
+					for (std::vector<unsigned char>& i : macierz)
+					{
+						std::fill(i.begin(), i.end(), 0);//tutaj zerujemy wartości w macierzy planszy
+					}
+				}
+			}
+			else
+			{
+
+				efekt_znikania--;
+				if (efekt_znikania == 0)
+				{
+					for (unsigned char i = 0; i < wiersze; i++)
+					{
+
+						if (czy_wyczyscic_linie[i] == 1)//jeżeli wyczyścić linię
+						{
+							for (unsigned char j = 0; j < kolumny; j++)//przewijamy się po komórkach
+							{
+								macierz[j][i] = 0;
+
+								for (unsigned char k = i; k > 0; k--)//tutaj swapujemy puste wiersze z tymi wierszami w których są jeszcze nie wypełnione
+								{
+									macierz[j][k] = macierz[j][k - 1];
+									macierz[j][k - 1] = 0;
+								}
+							}
+						}
+					}
+
+					koniec_gry = 0 == klocek_tetrisa.resetowanie_tetrisa(nastpeny_ksztalt_na_planszy, macierz);
+					nastpeny_ksztalt_na_planszy = static_cast<unsigned char>(losowanie_ksztaltow(engine_number));
+					std::fill(czy_wyczyscic_linie.begin(), czy_wyczyscic_linie.end(), 0);//clearujemy z linii które są już wyczyszoczone żeby cały czas sie nie usuwały
+				}
+			}
+
+			if (czas_trwania_klatki > lag)
+			{
+				unsigned char wyczyscic_rozmiar_komorki = static_cast<unsigned char>(2 * round(0.5f * wielkosc_komorki * (efekt_znikania / static_cast<float>(efekt_czyszczenia_linii))));//obliczam rozmiar wyczyszczenia komorki 
+
+				sf::RectangleShape komorka(sf::Vector2f(wielkosc_komorki - 1, wielkosc_komorki - 1));//użyję tego do narysowania wszystkiego
+				sf::RectangleShape preview_tetris(sf::Vector2f(5 * wielkosc_komorki, 5 * wielkosc_komorki));//rysuję tam poprzedzający ksztalt żeby gracz mógł wiedziec
+				preview_tetris.setFillColor(sf::Color(0, 0, 0));
+				preview_tetris.setOutlineThickness(-1);
+				preview_tetris.setPosition(wielkosc_komorki * (1.5f * kolumny - 2.5f), wielkosc_komorki * (0.25f * wiersze - 2.5f));
+				window.clear();
+
+				for (unsigned char i = 0; i < kolumny; i++)//rysujemy macierz (czyli naszą plansze po której się poruszają obiekty)
+				{
+					for (unsigned char j = 0; j < wiersze; j++)
+					{
+						if (czy_wyczyscic_linie[j] == 0)
+						{
+							komorka.setPosition(static_cast<float>(wielkosc_komorki * i), static_cast<float>(wielkosc_komorki * j));
+
+							if (koniec_gry == 1 && macierz[i][j] > 0)
+							{
+								komorka.setFillColor(kolor_kommorek[8]);
+							}
+							else
+							{
+								komorka.setFillColor(kolor_kommorek[macierz[i][j]]);
+							}
+
+							window.draw(komorka);
+						}
+					}
+				}
+
+				komorka.setFillColor(kolor_kommorek[8]);
+
+				if (koniec_gry == 0) // tutaj jeżeli gracz dalej gra a nie, że jest koniec gry
+				{
+					for (pozycja& komorki : klocek_tetrisa.ghost_tetris(macierz))//rysujemy tego pomocniczego tetriska
+					{
+						komorka.setPosition(static_cast<float>(wielkosc_komorki * komorki.x), static_cast<float>(wielkosc_komorki * komorki.y));
+
+						window.draw(komorka);
+					}
+
+					komorka.setFillColor(kolor_kommorek[klocek_tetrisa.ustawianie_ksztaltow() + 1]);
+				}
+
+				for (pozycja& komorki : klocek_tetrisa.ustawienie_komorki_planszy())//dalsze ustawienia planszy
+				{
+					komorka.setPosition(static_cast<float>(wielkosc_komorki * komorki.x), static_cast<float>(wielkosc_komorki * komorki.y));
+
+					window.draw(komorka);
+				}
+
+				for (unsigned char i = 0; i < kolumny; i++)//tutaj ustawiamy efekty, które polegają na rysunowaniu nastepnych instancji coraz mniejszych i znikających komórek
+				{
+					for (unsigned char j = 0; j < wiersze; j++)
+					{
+						if (czy_wyczyscic_linie[j] == 1)
+						{
+							komorka.setFillColor(kolor_kommorek[0]);
+							komorka.setPosition(static_cast<float>(wielkosc_komorki * i), static_cast<float>(wielkosc_komorki * j));
+							komorka.setSize(sf::Vector2f(wielkosc_komorki - 1, wielkosc_komorki - 1));
+
+							window.draw(komorka);
+
+							komorka.setFillColor(sf::Color(255, 255, 255));
+							komorka.setPosition(floor(wielkosc_komorki * (0.5f + i) - 0.5f * wyczyscic_rozmiar_komorki), floor(wielkosc_komorki * (0.5f + j) - 0.5f * wyczyscic_rozmiar_komorki));//żeby szybciej było zaokrąglamy w dół od razu
+							komorka.setSize(sf::Vector2f(wyczyscic_rozmiar_komorki, wyczyscic_rozmiar_komorki));
+
+							window.draw(komorka);
+						}
+					}
+				}
+
+
+				komorka.setFillColor(kolor_kommorek[1 + nastpeny_ksztalt_na_planszy]);//ustaiwamy kolory poprzedzających kostek
+				komorka.setSize(sf::Vector2f(wielkosc_komorki - 1, wielkosc_komorki - 1));
+
+				window.draw(preview_tetris);
+
+				for (pozycja& komorki : tworzenie_tetrisow(nastpeny_ksztalt_na_planszy, static_cast<unsigned char>(kolumny * 1.5f), static_cast<unsigned char>(0.25f * wiersze)))//rysuję tu nastpeny klocek 
+				{
+					unsigned short nastepny_klocek_tetrisa_x = wielkosc_komorki * komorki.x;//karkołomne ustwianie na środku tego kwadrata
+					unsigned short nastepny_klocek_tetrisa_y = wielkosc_komorki * komorki.y;
+
+					if (nastpeny_ksztalt_na_planszy == 0)
+					{
+						nastepny_klocek_tetrisa_y += static_cast<unsigned char>(round(0.5f * wielkosc_komorki));
+					}
+					else if (nastpeny_ksztalt_na_planszy != 3)
+					{
+						nastepny_klocek_tetrisa_x -= static_cast<unsigned char>(round(0.5f * wielkosc_komorki));
+					}
+
+					komorka.setPosition(nastepny_klocek_tetrisa_x, nastepny_klocek_tetrisa_y);
+
+					window.draw(komorka);
+				}
+
+				sf::Text tekst;
+				sf::Font czcionka;
+				czcionka.loadFromFile("czcionka.ttf");
+				tekst.setFont(czcionka);
+				tekst.setString("Line:" + std::to_string(linie_wyczyszczone) + "\nSzybkosc:" + std::to_string(poczatkowa_predkosc/obecna_predkosc_spadanie) + 'x');
+				tekst.setFillColor(sf::Color::Red);
+				tekst.setPosition(static_cast<unsigned short>(wielkosc_komorki * (0.5f + kolumny)), static_cast<unsigned short>(0.5f * wielkosc_komorki * wiersze));
+				sf::Vector2f skala = tekst.getScale();
+				tekst.scale(skala.x * 0.5f,skala.y * 0.5f);
+				window.draw(tekst);
+				
+				window.display();
+
+			}
+		}
+	}
+}
